@@ -3,9 +3,7 @@ import pandas as pd
 import requests
 import numpy as np
 import mibian
-from scipy.stats import norm
 import plotly.express as px
-from flask import Flask, session
 from datetime import datetime
 
 
@@ -88,11 +86,11 @@ opt_state.dict['params'] = opt_state.dict.get('params', OrderedDict())
 
 
 #### sidebar
-st.sidebar.title("Option parameters")
+st.sidebar.title("Exchange")
+underlying = st.sidebar.selectbox('', ['Moscow Exchange'], index=0)
 
 
 df_fut = get_fut_data()
-
 
 
 st.sidebar.markdown("### Underlying")
