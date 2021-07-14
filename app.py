@@ -219,25 +219,26 @@ if st.checkbox('Show What If Analysis', False):
             if row['type'] == 'call' or row['type'] == 'put':
                 # getting points for a plot
                 next_key = index
-                opt_vector = get_derivative_points(lst_undrl_points, dict_opt_type[row['type']], price,
-                                                   amount, strike,
+                opt_vector = get_derivative_points(lst_undrl_points, dict_opt_type[row['type']],
+                                                   row['price'], row['amount'], row['strike'],
                                                    (row['original_volatility'] + vola_increment) / 100,
                                                    (row['original_time(days)'] + time_increment) / 365)
 
                 opt_state.dict['points'][next_key + '_current'] = opt_vector
 
                 # calculating updated greeks
-                option = mibian.BS([undrl_price, strike, 0, row['original_time(days)'] + time_increment],
+                option = mibian.BS([row['underlying_price'], row['strike'], 0,
+                                    row['original_time(days)'] + time_increment],
                                    volatility=row['original_volatility'] + vola_increment)
 
-                if contr_type == 'call':
-                    opt_state.dict['params'][next_key]['delta'] = amount * option.callDelta
-                    opt_state.dict['params'][next_key]['theta'] = amount * option.callTheta
-                elif contr_type == 'put':
-                    opt_state.dict['params'][next_key]['delta'] = amount * option.putDelta
-                    opt_state.dict['params'][next_key]['theta'] = amount * option.putTheta
-                opt_state.dict['params'][next_key]['gamma'] = amount * option.gamma
-                opt_state.dict['params'][next_key]['vega'] = amount * option.vega
+                if dict_opt_type[row['type']] == 'call':
+                    opt_state.dict['params'][next_key]['delta'] = row['amount'] * option.callDelta
+                    opt_state.dict['params'][next_key]['theta'] = row['amount'] * option.callTheta
+                elif dict_opt_type[row['type']] == 'put':
+                    opt_state.dict['params'][next_key]['delta'] = row['amount'] * option.putDelta
+                    opt_state.dict['params'][next_key]['theta'] = row['amount'] * option.putTheta
+                opt_state.dict['params'][next_key]['gamma'] = row['amount'] * option.gamma
+                opt_state.dict['params'][next_key]['vega'] = row['amount'] * option.vega
 
                 opt_state.dict['params'][next_key]['time(days)'] = row['original_time(days)'] + time_increment
                 opt_state.dict['params'][next_key]['volatility'] = row['original_volatility'] + vola_increment
