@@ -62,9 +62,10 @@ def get_exp_derivative_points(lst_undrl_prices, type_contract, price, amount=1, 
 def iss_urls():
     url_basic_futures = "https://iss.moex.com/iss/engines/futures/markets/forts/securities.json"
     url_basic_options = "https://iss.moex.com/iss/engines/futures/markets/options/securities.json"
-    columns_fut = ["SECID", "SHORTNAME", "LASTTRADEDATE", "ASSETCODE", "PREVOPENPOSITION",
+    columns_fut = ["SECID", "SHORTNAME", "PREVSETTLEPRICE", "DECIMALS", "LASTTRADEDATE", "ASSETCODE",
+                   "PREVOPENPOSITION",
                    "LASTSETTLEPRICE", "MINSTEP", "STEPPRICE", "LOWLIMIT", "HIGHLIMIT"]
-    columns_opt = ["SECID", "SHORTNAME", "LASTTRADEDATE", "ASSETCODE",
+    columns_opt = ["SECID", "SHORTNAME", "PREVSETTLEPRICE", "DECIMALS", "LASTTRADEDATE", "ASSETCODE",
                      "PREVOPENPOSITION", "LASTSETTLEPRICE", "MINSTEP", "STEPPRICE"]
 
     return {"query_futures_instruments": url_basic_futures + \
