@@ -22,6 +22,9 @@ def get_fut_data():
     columns_fut = r_fut.json()["securities"]["columns"]
     df_fut = pd.DataFrame(data_fut, columns=columns_fut)
 
+    # filtering old futures
+    df_fut = df_fut[pd.to_datetime(df_fut['LASTTRADEDATE']) > datetime.now()]
+
     # getting absolute price limits
     df_fut['ABS_LOW_LIMIT'] = df_fut['LASTSETTLEPRICE'] - df_fut['LOWLIMIT']
     df_fut['ABS_HIGH_LIMIT'] = df_fut['LASTSETTLEPRICE'] + df_fut['HIGHLIMIT']
@@ -39,12 +42,12 @@ def min_vola_time(d):
     min_time = 0
     for key, value in d.items():
         if min_vola == 0 and (value['type'] != 'future'): min_vola = value['original_volatility']
-        if min_time == 0 and (value['type'] != 'future'): min_time = value['original_time(days)']
+        if min_time == 0 and (value['type'] != 'future'): min_time = value['original_maturity(days)']
 
         if min_vola > value['original_volatility'] and (value['type'] != 'future'):
             min_vola = value['original_volatility']
-        if min_time > value['original_time(days)'] and (value['type'] != 'future'):
-            min_time = value['original_time(days)']
+        if min_time > value['original_maturity(days)'] and (value['type'] != 'future'):
+            min_time = value['original_maturity(days)']
 
     return [int(np.floor(min_vola)), int(np.floor(min_time))]
 
@@ -55,6 +58,8 @@ def get_opt_data(underlying):
     data_opt = r_opt.json()["securities"]["data"]
     columns_opt = r_opt.json()["securities"]["columns"]
     df_opt = pd.DataFrame(data_opt, columns=columns_opt)
+
+    df_opt = df_opt[df_opt['ASSETCODE'] == underlying]
 
     # getting underlying
     df_opt["UNDERLYING"] = df_opt["SHORTNAME"].apply(get_option_underlying)
@@ -68,12 +73,14 @@ def get_opt_data(underlying):
     # getting type of option
     df_opt["OPT_TYPE"] = df_opt["SHORTNAME"].apply(get_option_type)
 
+    # filtering old options
+    df_opt = df_opt[pd.to_datetime(df_opt['LASTTRADEDATE']) > datetime.now()]
 
     # getting STEPPRICE param for options from futures
     df_opt = df_opt.merge(df_fut[["SHORTNAME", "STEPPRICE"]],
                                   how="left", left_on="UNDERLYING", right_on="SHORTNAME", suffixes=["", "_y"])
 
-    return df_opt[df_opt['ASSETCODE'] == underlying]
+    return df_opt
 
 #### getting parameters
 dict_opt_type = {'call': 1, 'put': -1, 'future': 0}
@@ -87,7 +94,7 @@ opt_state.dict['params'] = opt_state.dict.get('params', OrderedDict())
 
 #### sidebar
 st.sidebar.title("Exchange")
-underlying = st.sidebar.selectbox('', ['Moscow Exchange'], index=0)
+exchange = st.sidebar.selectbox('', ['Moscow Exchange'], index=0)
 
 
 df_fut = get_fut_data()
@@ -102,15 +109,29 @@ except ValueError:
     default_index = 0
 underlying = st.sidebar.selectbox('', lst_undrl, index=default_index)
 
+min_step = df_fut[df_fut['ASSETCODE'] == underlying]['MINSTEP'].unique()[0]
+decimals = df_fut[df_fut['ASSETCODE'] == underlying]['DECIMALS'].unique()[0]
+
 # initialization state variable
 if 'underlying_type' not in opt_state.dict:
 	opt_state.dict['underlying_type'] = underlying
 
-# if undelying is changed, old points will be deleted
+# apply default
+# if 'default_portfolio' not in opt_state.dict:
+#     st.text("apply default")
+    # getting points for a plot
+    # next_key = shortname
+    # opt_vector = get_derivative_points(lst_undrl_points, dict_opt_type[contr_type], price,
+    #                         amount, strike, volatility/100, maturity_days/365)
+    # exp_opt_vector = get_exp_derivative_points(lst_undrl_points, dict_opt_type[contr_type],
+    #                                            price, amount, strike)
+
+# if underlying is changed, old points will be deleted
 if opt_state.dict['underlying_type'] != underlying:
     opt_state.dict['points'] = OrderedDict()
     opt_state.dict['params'] = OrderedDict()
     opt_state.dict['underlying_type'] = underlying
+    opt_state.dict['default_portfolio'] = False
 
 #st.text(opt_state.dict['underlying_type'])
 
@@ -131,7 +152,7 @@ if contr_type != 'future' and df_opt.shape[0] > 0:
 
     st.sidebar.markdown("### Strike")
     #st.sidebar.text(df_opt[df_opt['LASTTRADEDATE'] == exp_date])
-    df_opt['STRIKE'] = df_opt['STRIKE'].apply(int)
+    df_opt['STRIKE'] = df_opt['STRIKE'].apply(float)
     strike_range = df_opt[df_opt['LASTTRADEDATE'] == exp_date]['STRIKE'].sort_values().unique()
     strike = st.sidebar.selectbox('', strike_range, index=int(0.5 * len(strike_range)))
 
@@ -140,6 +161,12 @@ if contr_type != 'future' and df_opt.shape[0] > 0:
     shortname = df_opt[(df_opt['LASTTRADEDATE'] == exp_date) &
                         (df_opt['STRIKE'] == strike) &
                         (df_opt['OPT_TYPE'] == contr_type)]['SHORTNAME'].unique()[0]
+    ## Price
+    st.sidebar.markdown("### Price")
+    prevsettleprice = df_opt[(df_opt['LASTTRADEDATE'] == exp_date) &
+                        (df_opt['STRIKE'] == strike) &
+                        (df_opt['OPT_TYPE'] == contr_type)]['PREVSETTLEPRICE'].unique()[0]
+    price = st.sidebar.number_input('', min_value=0.0, step=min_step, value=prevsettleprice)
 else:
     st.sidebar.markdown("### Expiration Date")
     lst_exp_dates = df_fut[df_fut['ASSETCODE'] == underlying].sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique()
@@ -150,6 +177,11 @@ else:
     underlying_mm_yy = shortname
     strike = 0
     volatility = 0
+    ## Price
+    st.sidebar.markdown("### Price")
+    prevsettleprice = df_fut[(df_fut['ASSETCODE'] == underlying) &
+                       (df_fut['LASTTRADEDATE'] == exp_date)]['PREVSETTLEPRICE'].unique()[0]
+    price = st.sidebar.number_input('', min_value=0.0, step=min_step, value=prevsettleprice)
 
 
 time_before_expiration = (datetime.strptime(exp_date, '%Y-%m-%d') - datetime.today()).total_seconds()/(365*24*60*60)
@@ -178,13 +210,10 @@ lst_undrl_points = np.unique(np.append(np.append(undrl_points, extra_undrl_point
 lst_undrl_points.sort()
 
 
-st.sidebar.markdown("### Price")
-price = st.sidebar.number_input('', min_value=0.0)
-
 
 
 st.sidebar.markdown("### Amount")
-amount = st.sidebar.number_input('*negative is short', step=1)
+amount = st.sidebar.number_input('*negative is short', step=1, value=-42)
 
 
 df_current_opt_prices = pd.DataFrame({'total_values': [0] * len(lst_undrl_points)},
@@ -200,12 +229,13 @@ side_cols_btn = st.sidebar.beta_columns(2)
 if side_cols_btn[1].button("Clear"):
     opt_state.dict['points'] = OrderedDict()
     opt_state.dict['params'] = OrderedDict()
+    opt_state.dict['default_portfolio'] = False
 
 chart_slot = st.empty()
 
 
 if st.checkbox('Show What If Analysis', False):
-    sub_col = st.beta_columns(2)
+    sub_col = st.beta_columns(3)
     vola_increment = sub_col[0].slider('Volatility Increment',
                                        min_value=-min_vola_time(opt_state.dict['params'])[0],
                                        max_value=99, value=0)
@@ -213,8 +243,15 @@ if st.checkbox('Show What If Analysis', False):
                                        min_value=-min_vola_time(opt_state.dict['params'])[1],
                                        max_value=365, value=0)
 
+    # changing price
+    updated_undrl_price = sub_col[2].slider('Update underlying price',
+                                        min_value=float(price_limit_down),
+                                        max_value=float(price_limit_up),
+                                        value=float(undrl_price),
+                                        step=min_step)
+
     # applying increment
-    if sub_col[0].button("Apply increment"):
+    if sub_col[1].button("Update parameters"):
         for index, row in opt_state.dict['params'].items():
             if row['type'] == 'call' or row['type'] == 'put':
                 # getting points for a plot
@@ -222,26 +259,30 @@ if st.checkbox('Show What If Analysis', False):
                 opt_vector = get_derivative_points(lst_undrl_points, dict_opt_type[row['type']],
                                                    row['price'], row['amount'], row['strike'],
                                                    (row['original_volatility'] + vola_increment) / 100,
-                                                   (row['original_time(days)'] + time_increment) / 365)
+                                                   (row['original_maturity(days)'] + time_increment) / 365)
 
                 opt_state.dict['points'][next_key + '_current'] = opt_vector
 
                 # calculating updated greeks
-                option = mibian.BS([row['underlying_price'], row['strike'], 0,
-                                    row['original_time(days)'] + time_increment],
+                option = mibian.BS([updated_undrl_price, row['strike'], 0,
+                                    row['original_maturity(days)'] + time_increment],
                                    volatility=row['original_volatility'] + vola_increment)
+                if row['type'] == 'call':
+                    opt_state.dict['params'][next_key]['delta'] = row['amount'] * round(option.callDelta, 3)
+                    opt_state.dict['params'][next_key]['theta'] = row['amount'] * round(option.callTheta, 3)
+                    opt_state.dict['params'][next_key]['fair price'] = round(option.callPrice, decimals)
+                elif row['type'] == 'put':
+                    opt_state.dict['params'][next_key]['delta'] = row['amount'] * round(option.putDelta, 3)
+                    opt_state.dict['params'][next_key]['theta'] = row['amount'] * round(option.putTheta, 3)
+                    opt_state.dict['params'][next_key]['fair price'] = round(option.putPrice, decimals)
+                opt_state.dict['params'][next_key]['gamma'] = row['amount'] * round(option.gamma, 6)
+                opt_state.dict['params'][next_key]['vega'] = row['amount'] * round(option.vega, 3)
 
-                if dict_opt_type[row['type']] == 'call':
-                    opt_state.dict['params'][next_key]['delta'] = row['amount'] * option.callDelta
-                    opt_state.dict['params'][next_key]['theta'] = row['amount'] * option.callTheta
-                elif dict_opt_type[row['type']] == 'put':
-                    opt_state.dict['params'][next_key]['delta'] = row['amount'] * option.putDelta
-                    opt_state.dict['params'][next_key]['theta'] = row['amount'] * option.putTheta
-                opt_state.dict['params'][next_key]['gamma'] = row['amount'] * option.gamma
-                opt_state.dict['params'][next_key]['vega'] = row['amount'] * option.vega
-
-                opt_state.dict['params'][next_key]['time(days)'] = row['original_time(days)'] + time_increment
-                opt_state.dict['params'][next_key]['volatility'] = row['original_volatility'] + vola_increment
+                opt_state.dict['params'][next_key]['maturity(days)'] = round(row['original_maturity(days)'] + time_increment, 1)
+                opt_state.dict['params'][next_key]['volatility'] = round(row['original_volatility'] + vola_increment, 3)
+                opt_state.dict['params'][next_key]['underlying_price'] = updated_undrl_price
+else:
+    updated_undrl_price = undrl_price
 
 
 if side_cols_btn[0].button("Add to portfolio"):
@@ -290,14 +331,16 @@ if side_cols_btn[0].button("Add to portfolio"):
 
     opt_state.dict['params'][next_key] = {'name': shortname, 'type': contr_type,
                                           'strike': strike, 'underlying_price': undrl_price,
-                                          'amount': amount, 'time(days)': maturity_days,
-                                          'volatility': volatility, 'price': price,
+                                          'amount': amount, 'maturity(days)': round(maturity_days, 1),
+                                          'volatility': round(volatility, 2), 'price': price,
+                                          'fair price': round(price, decimals),
                                           'is_in_portfolio': True,
-                                          'delta': delta, 'gamma': gamma,
-                                          'vega': vega, 'theta': theta,
-                                          'original_time(days)': maturity_days,
+                                          'delta': round(delta, 3), 'gamma': round(gamma, 6),
+                                          'vega': round(vega, 3), 'theta': round(theta, 3),
+                                          'original_maturity(days)': maturity_days,
                                           'original_volatility': volatility,
-                                          'underlying': underlying}
+                                          'underlying': underlying,
+                                          'settlement_price': prevsettleprice}
 
 
 df_params = pd.DataFrame(opt_state.dict['params']).T
@@ -313,11 +356,11 @@ try:
         else:
             opt_state.dict['params'][key]['is_in_portfolio'] = False
 
-    df_params = pd.DataFrame(opt_state.dict['params']).T
+    df_params = pd.DataFrame(opt_state.dict['params']).T #.round({'delta': 3, 'theta': 3})
     st.dataframe(df_params[df_params['is_in_portfolio'] == True][df_params.columns.difference(['name',
                                                                     'is_in_portfolio',
                                                                     'original_volatility',
-                                                                    'original_time(days)'])])
+                                                                    'original_maturity(days)'])].T)
 except:
     in_portfolio = st.multiselect('In portfolio', [])
 
@@ -333,7 +376,7 @@ are_in = [v['is_in_portfolio'] for v in opt_state.dict['params'].values()]
 df_position['total_opt_points'] = (df_position[lst_current]*are_in).sum(axis=1)
 df_position['total_exp_opt_points'] = (df_position[lst_expiration]*are_in).sum(axis=1)
 
-if st.checkbox('Show Data', True):
+if st.checkbox('Show Data', False):
     st.dataframe(df_position)
 
 ### plotting
@@ -357,7 +400,7 @@ fig.add_vline(x=price_limit_down, line_width=1, line_dash="dash", line_color="re
 fig.add_vline(x=price_limit_up, line_width=1, line_dash="dash", line_color="red",
                 name='price limit up')
 ### adding underlying price
-fig.add_vline(x=undrl_price, line_width=1, line_dash="dashdot", line_color="black",
+fig.add_vline(x=updated_undrl_price, line_width=1, line_dash="dashdot", line_color="black",
                 name='underlying price')
 ### adding horizontal axe
 fig.add_hline(y=0, line_width=1, line_color="black")
