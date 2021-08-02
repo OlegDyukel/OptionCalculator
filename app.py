@@ -4,7 +4,7 @@ import requests
 import numpy as np
 import mibian
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, date
 
 
 from collections import OrderedDict
@@ -15,7 +15,7 @@ from functions import get_undrl_points, get_derivative_points, get_exp_derivativ
     get_option_underlying, get_option_series_name, get_option_strike, get_option_type
 
 @st.cache
-def get_fut_data():
+def get_fut_data(date):
     ######### futures data
     r_fut = requests.get(iss_urls()["query_futures_instruments"])
     data_fut = r_fut.json()["securities"]["data"]
@@ -23,7 +23,7 @@ def get_fut_data():
     df_fut = pd.DataFrame(data_fut, columns=columns_fut)
 
     # filtering old futures
-    df_fut = df_fut[pd.to_datetime(df_fut['LASTTRADEDATE']) > datetime.now()]
+    df_fut = df_fut[pd.to_datetime(df_fut['LASTTRADEDATE']) > date]
 
     # getting absolute price limits
     df_fut['ABS_LOW_LIMIT'] = df_fut['LASTSETTLEPRICE'] - df_fut['LOWLIMIT']
@@ -52,7 +52,7 @@ def min_vola_time(d):
     return [int(np.floor(min_vola)), int(np.floor(min_time))]
 
 @st.cache(allow_output_mutation=True)
-def get_opt_data(underlying):
+def get_opt_data(underlying, date):
     ######### options data
     r_opt = requests.get(iss_urls()["query_options_instruments"])
     data_opt = r_opt.json()["securities"]["data"]
@@ -74,16 +74,53 @@ def get_opt_data(underlying):
     df_opt["OPT_TYPE"] = df_opt["SHORTNAME"].apply(get_option_type)
 
     # filtering old options
-    df_opt = df_opt[pd.to_datetime(df_opt['LASTTRADEDATE']) > datetime.now()]
+    df_opt = df_opt[pd.to_datetime(df_opt['LASTTRADEDATE']) > date]
 
     # getting STEPPRICE param for options from futures
-    df_opt = df_opt.merge(df_fut[["SHORTNAME", "STEPPRICE"]],
-                                  how="left", left_on="UNDERLYING", right_on="SHORTNAME", suffixes=["", "_y"])
-
+    df_opt = df_opt.merge(df_fut[["SHORTNAME", "STEPPRICE", "PREVSETTLEPRICE", "LASTTRADEDATE"]],
+                                  how="left", left_on="UNDERLYING", right_on="SHORTNAME", suffixes=["", "_fut"])
+    df_opt['strike_underl_distance'] = np.abs(df_opt['STRIKE'] - df_opt['PREVSETTLEPRICE_fut'])
     return df_opt
+
+
+def get_volatility(contr_type, undrl_price, strike, maturity_days, price):
+    if contr_type == contr_type:
+        option_for_volat = mibian.BS([undrl_price, strike, 0, maturity_days], callPrice=price)
+        return option_for_volat.impliedVolatility
+    elif contr_type == contr_type:
+        option_for_volat = mibian.BS([undrl_price, strike, 0, maturity_days], putPrice=price)
+        return option_for_volat.impliedVolatility
+    else:   # branch for future
+        return 0
+
+
+def get_greeks(contr_type, undrl_price, strike, maturity_days, volatility):
+    # calculating greeks
+    option = mibian.BS([undrl_price, strike, 0, maturity_days], volatility=volatility)
+
+    if contr_type == contr_type:
+        delta = amount * option.callDelta
+        gamma = amount * option.gamma
+        vega = amount * option.vega
+        theta = amount * option.callTheta
+    elif contr_type == contr_type:
+        delta = amount * option.putDelta
+        gamma = amount * option.gamma
+        vega = amount * option.vega
+        theta = amount * option.putTheta
+    else:    # branch for future
+        delta = amount
+        gamma = 0
+        vega = 0
+        theta = 0
+
+    return {'delta': round(delta, 3), 'gamma': round(gamma, 6),
+            'vega': round(vega, 3), 'theta': round(theta, 3)}
 
 #### getting parameters
 dict_opt_type = {'call': 1, 'put': -1, 'future': 0}
+current_date = datetime.now()
+current_date = current_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
 opt_state = SessionState.get(rerun=False, dict=OrderedDict())
 opt_state.dict['points'] = opt_state.dict.get('points', OrderedDict())
@@ -97,7 +134,7 @@ st.sidebar.title("Exchange")
 exchange = st.sidebar.selectbox('', ['Moscow Exchange'], index=0)
 
 
-df_fut = get_fut_data()
+df_fut = get_fut_data(current_date)
 
 
 st.sidebar.markdown("### Underlying")
@@ -116,15 +153,6 @@ decimals = df_fut[df_fut['ASSETCODE'] == underlying]['DECIMALS'].unique()[0]
 if 'underlying_type' not in opt_state.dict:
 	opt_state.dict['underlying_type'] = underlying
 
-# apply default
-# if 'default_portfolio' not in opt_state.dict:
-#     st.text("apply default")
-    # getting points for a plot
-    # next_key = shortname
-    # opt_vector = get_derivative_points(lst_undrl_points, dict_opt_type[contr_type], price,
-    #                         amount, strike, volatility/100, maturity_days/365)
-    # exp_opt_vector = get_exp_derivative_points(lst_undrl_points, dict_opt_type[contr_type],
-    #                                            price, amount, strike)
 
 # if underlying is changed, old points will be deleted
 if opt_state.dict['underlying_type'] != underlying:
@@ -133,28 +161,33 @@ if opt_state.dict['underlying_type'] != underlying:
     opt_state.dict['underlying_type'] = underlying
     opt_state.dict['default_portfolio'] = False
 
-#st.text(opt_state.dict['underlying_type'])
 
-df_opt = get_opt_data(underlying)
+df_opt = get_opt_data(underlying, current_date)
 
 
 st.sidebar.markdown("### Type of derivative")
 if df_opt.shape[0] > 0:
-    contr_type = st.sidebar.radio('', ['future', 'call', 'put'])
+    contr_type = st.sidebar.radio('', ['future', 'call', 'put'], index=1)
 else:
     contr_type = st.sidebar.radio('', ['future'])
 
 
 if contr_type != 'future' and df_opt.shape[0] > 0:
+    # filter contr_type & the closest futures & central strike
+    df_opt_subset = df_opt[(df_opt['OPT_TYPE'] == contr_type)
+                           & (df_opt['LASTTRADEDATE_fut'].min() == df_opt['LASTTRADEDATE_fut'])]
+    df_opt_subset = df_opt_subset[df_opt_subset['LASTTRADEDATE'].max() == df_opt_subset['LASTTRADEDATE']]
+    df_opt_subset = df_opt_subset[(df_opt_subset['strike_underl_distance'].min() == df_opt_subset['strike_underl_distance'])]
+
+
     st.sidebar.markdown("### Expiration Date")
-    lst_exp_dates = df_opt.sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique()
-    exp_date = st.sidebar.selectbox('', lst_exp_dates)
+    lst_exp_dates = tuple(df_opt.sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique())
+    exp_date = st.sidebar.selectbox('', lst_exp_dates, index=lst_exp_dates.index(df_opt_subset['LASTTRADEDATE'].values[0]))
 
     st.sidebar.markdown("### Strike")
-    #st.sidebar.text(df_opt[df_opt['LASTTRADEDATE'] == exp_date])
     df_opt['STRIKE'] = df_opt['STRIKE'].apply(float)
-    strike_range = df_opt[df_opt['LASTTRADEDATE'] == exp_date]['STRIKE'].sort_values().unique()
-    strike = st.sidebar.selectbox('', strike_range, index=int(0.5 * len(strike_range)))
+    strike_range = tuple(df_opt[df_opt['LASTTRADEDATE'] == exp_date]['STRIKE'].sort_values().unique())
+    strike = st.sidebar.selectbox('', strike_range, index=strike_range.index(df_opt_subset['STRIKE'].values[0]))
 
     ### getting underlying-MM.YY for prices and limits
     underlying_mm_yy = df_opt[df_opt['LASTTRADEDATE'] == exp_date]['UNDERLYING'].unique()[0]
@@ -184,7 +217,13 @@ else:
     price = st.sidebar.number_input('', min_value=0.0, step=min_step, value=prevsettleprice)
 
 
-time_before_expiration = (datetime.strptime(exp_date, '%Y-%m-%d') - datetime.today()).total_seconds()/(365*24*60*60)
+st.sidebar.markdown("### Amount")
+amount = st.sidebar.number_input('*negative is short', step=1, value=42)
+
+######################## inner calculations #########################
+###############################################################
+
+maturity_days = 365 * (datetime.strptime(exp_date, '%Y-%m-%d') - datetime.today()).total_seconds()/(365*24*60*60)
 
 
 # values for plotting vertical lines
@@ -210,17 +249,39 @@ lst_undrl_points = np.unique(np.append(np.append(undrl_points, extra_undrl_point
 lst_undrl_points.sort()
 
 
-
-
-st.sidebar.markdown("### Amount")
-amount = st.sidebar.number_input('*negative is short', step=1, value=-42)
-
-
 df_current_opt_prices = pd.DataFrame({'total_values': [0] * len(lst_undrl_points)},
                                          index=lst_undrl_points)
 
+#################################### mainbar ############################
+###########################################################################
+# apply default
+if 'default_portfolio' not in opt_state.dict and len(opt_state.dict['params']) == 0:
 
-#### mainbar
+    volatility = get_volatility(contr_type, undrl_price, strike, maturity_days, price)
+    dict_greeks = get_greeks(contr_type, undrl_price, strike, maturity_days, volatility)
+
+    # getting points for a plot
+    opt_state.dict['points'][shortname + '_current'] = get_derivative_points(lst_undrl_points,
+                                                    dict_opt_type[contr_type], price,
+                                                    amount, strike, volatility/100, maturity_days/365)
+    opt_state.dict['points'][shortname + '_expiration'] = get_exp_derivative_points(lst_undrl_points,
+                                                            dict_opt_type[contr_type],
+                                                            price, amount, strike)
+    # getting params
+    opt_state.dict['params'][shortname] = {'name': shortname, 'type': contr_type,
+                                          'strike': strike, 'underlying_price': undrl_price,
+                                          'amount': amount, 'maturity(days)': round(maturity_days, 1),
+                                          'volatility': round(volatility, 2), 'price': price,
+                                          'fair price': round(price, decimals),
+                                          'is_in_portfolio': True,
+                                          'delta': dict_greeks['delta'], 'gamma': dict_greeks['gamma'],
+                                          'vega': dict_greeks['vega'], 'theta': dict_greeks['theta'],
+                                          'original_maturity(days)': maturity_days,
+                                          'original_volatility': volatility,
+                                          'underlying': underlying,
+                                          'settlement_price': prevsettleprice}
+
+
 st.title("Portfolio")
 
 
@@ -255,88 +316,59 @@ if st.checkbox('Show What If Analysis', False):
         for index, row in opt_state.dict['params'].items():
             if row['type'] == 'call' or row['type'] == 'put':
                 # getting points for a plot
-                next_key = index
                 opt_vector = get_derivative_points(lst_undrl_points, dict_opt_type[row['type']],
                                                    row['price'], row['amount'], row['strike'],
                                                    (row['original_volatility'] + vola_increment) / 100,
                                                    (row['original_maturity(days)'] + time_increment) / 365)
 
-                opt_state.dict['points'][next_key + '_current'] = opt_vector
+                opt_state.dict['points'][index + '_current'] = opt_vector
 
                 # calculating updated greeks
                 option = mibian.BS([updated_undrl_price, row['strike'], 0,
                                     row['original_maturity(days)'] + time_increment],
                                    volatility=row['original_volatility'] + vola_increment)
                 if row['type'] == 'call':
-                    opt_state.dict['params'][next_key]['delta'] = row['amount'] * round(option.callDelta, 3)
-                    opt_state.dict['params'][next_key]['theta'] = row['amount'] * round(option.callTheta, 3)
-                    opt_state.dict['params'][next_key]['fair price'] = round(option.callPrice, decimals)
+                    opt_state.dict['params'][index]['delta'] = row['amount'] * round(option.callDelta, 3)
+                    opt_state.dict['params'][index]['theta'] = row['amount'] * round(option.callTheta, 3)
+                    opt_state.dict['params'][index]['fair price'] = round(option.callPrice, decimals)
                 elif row['type'] == 'put':
-                    opt_state.dict['params'][next_key]['delta'] = row['amount'] * round(option.putDelta, 3)
-                    opt_state.dict['params'][next_key]['theta'] = row['amount'] * round(option.putTheta, 3)
-                    opt_state.dict['params'][next_key]['fair price'] = round(option.putPrice, decimals)
-                opt_state.dict['params'][next_key]['gamma'] = row['amount'] * round(option.gamma, 6)
-                opt_state.dict['params'][next_key]['vega'] = row['amount'] * round(option.vega, 3)
+                    opt_state.dict['params'][index]['delta'] = row['amount'] * round(option.putDelta, 3)
+                    opt_state.dict['params'][index]['theta'] = row['amount'] * round(option.putTheta, 3)
+                    opt_state.dict['params'][index]['fair price'] = round(option.putPrice, decimals)
+                opt_state.dict['params'][index]['gamma'] = row['amount'] * round(option.gamma, 6)
+                opt_state.dict['params'][index]['vega'] = row['amount'] * round(option.vega, 3)
 
-                opt_state.dict['params'][next_key]['maturity(days)'] = round(row['original_maturity(days)'] + time_increment, 1)
-                opt_state.dict['params'][next_key]['volatility'] = round(row['original_volatility'] + vola_increment, 3)
-                opt_state.dict['params'][next_key]['underlying_price'] = updated_undrl_price
+                opt_state.dict['params'][index]['maturity(days)'] = round(row['original_maturity(days)'] + time_increment, 1)
+                opt_state.dict['params'][index]['volatility'] = round(row['original_volatility'] + vola_increment, 3)
+                opt_state.dict['params'][index]['underlying_price'] = updated_undrl_price
 else:
     updated_undrl_price = undrl_price
 
 
 if side_cols_btn[0].button("Add to portfolio"):
 
-    maturity_days = 365 * time_before_expiration #+ time_increment
     # calculating volatility
-    if contr_type == 'call':
-        option_for_volat = mibian.BS([undrl_price, strike, 0, maturity_days], callPrice=price)
-        volatility = option_for_volat.impliedVolatility
-    elif contr_type == 'put':
-        option_for_volat = mibian.BS([undrl_price, strike, 0, maturity_days], putPrice=price)
-        volatility = option_for_volat.impliedVolatility
-    else:   # branch for future
-        volatility = 0
-
+    volatility = get_volatility(contr_type, undrl_price, strike, maturity_days, price)
+    dict_greeks = get_greeks(contr_type, undrl_price, strike, maturity_days, volatility)
 
     # getting points for a plot
-    next_key = shortname
-    opt_vector = get_derivative_points(lst_undrl_points, dict_opt_type[contr_type], price,
-                            amount, strike, volatility/100, maturity_days/365)
-    exp_opt_vector = get_exp_derivative_points(lst_undrl_points, dict_opt_type[contr_type],
-                                               price, amount, strike)
+    opt_state.dict['points'][shortname + '_current'] = get_derivative_points(lst_undrl_points,
+                                                        dict_opt_type[contr_type], price,
+                                                        amount, strike, volatility/100,
+                                                                             maturity_days/365)
+    opt_state.dict['points'][shortname + '_expiration'] = get_exp_derivative_points(lst_undrl_points,
+                                                            dict_opt_type[contr_type],
+                                                            price, amount, strike)
 
-    opt_state.dict['points'][next_key + '_current'] = opt_vector
-    opt_state.dict['points'][next_key + '_expiration'] = exp_opt_vector
-
-    # calculating greeks
-    option = mibian.BS([undrl_price, strike, 0, maturity_days], volatility=volatility)
-
-    if contr_type == 'call':
-        delta = amount * option.callDelta
-        gamma = amount * option.gamma
-        vega = amount * option.vega
-        theta = amount * option.callTheta
-    elif contr_type == 'put':
-        delta = amount * option.putDelta
-        gamma = amount * option.gamma
-        vega = amount * option.vega
-        theta = amount * option.putTheta
-    else:    # branch for future
-        delta = amount
-        gamma = 0
-        vega = 0
-        theta = 0
-
-
-    opt_state.dict['params'][next_key] = {'name': shortname, 'type': contr_type,
+    # getting params
+    opt_state.dict['params'][shortname] = {'name': shortname, 'type': contr_type,
                                           'strike': strike, 'underlying_price': undrl_price,
                                           'amount': amount, 'maturity(days)': round(maturity_days, 1),
                                           'volatility': round(volatility, 2), 'price': price,
                                           'fair price': round(price, decimals),
                                           'is_in_portfolio': True,
-                                          'delta': round(delta, 3), 'gamma': round(gamma, 6),
-                                          'vega': round(vega, 3), 'theta': round(theta, 3),
+                                          'delta': dict_greeks['delta'], 'gamma': dict_greeks['gamma'],
+                                          'vega': dict_greeks['vega'], 'theta': dict_greeks['theta'],
                                           'original_maturity(days)': maturity_days,
                                           'original_volatility': volatility,
                                           'underlying': underlying,
