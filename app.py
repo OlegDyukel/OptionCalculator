@@ -136,6 +136,7 @@ exchange = st.sidebar.selectbox('', ['Moscow Exchange'], index=0)
 
 df_fut = get_fut_data(current_date)
 
+#st.write(df_fut[df_fut['ASSETCODE'] == 'RTS'])
 
 st.sidebar.markdown("### Underlying")
 #### trying to get RTS underlying as a default
@@ -229,8 +230,8 @@ maturity_days = 365 * (datetime.strptime(exp_date, '%Y-%m-%d') - datetime.today(
 # values for plotting vertical lines
 undrl_price = df_fut[df_fut['SHORTNAME'] == underlying_mm_yy]['LASTSETTLEPRICE'].values[0]
 
-price_limit_down = df_fut[df_fut['SHORTNAME'] == underlying_mm_yy]['ABS_LOW_LIMIT'].values[0]
-price_limit_up = df_fut[df_fut['SHORTNAME'] == underlying_mm_yy]['ABS_HIGH_LIMIT'].values[0]
+price_limit_down = df_fut[df_fut['SHORTNAME'] == underlying_mm_yy]['ABS_LOW_LIMIT'].max()
+price_limit_up = df_fut[df_fut['SHORTNAME'] == underlying_mm_yy]['ABS_HIGH_LIMIT'].min()
 
 risk_limit_down = df_fut[df_fut['SHORTNAME'] == underlying_mm_yy]['ABS_LOW_RISK_LIMIT'].values[0]
 risk_limit_up = df_fut[df_fut['SHORTNAME'] == underlying_mm_yy]['ABS_HIGH_RISK_LIMIT'].values[0]
@@ -305,11 +306,12 @@ if st.checkbox('Show What If Analysis', False):
                                        max_value=365, value=0)
 
     # changing price
-    updated_undrl_price = sub_col[2].slider('Update underlying price',
-                                        min_value=float(price_limit_down),
-                                        max_value=float(price_limit_up),
-                                        value=float(undrl_price),
+    undrl_price_increment = sub_col[2].slider('Underlying Price Increment',
+                                        min_value=float(price_limit_down - undrl_price),
+                                        max_value=float(price_limit_up - undrl_price),
+                                        value=float(0),
                                         step=min_step)
+    updated_undrl_price = undrl_price + undrl_price_increment
 
     # applying increment
     if sub_col[1].button("Update parameters"):
@@ -324,7 +326,8 @@ if st.checkbox('Show What If Analysis', False):
                 opt_state.dict['points'][index + '_current'] = opt_vector
 
                 # calculating updated greeks
-                option = mibian.BS([updated_undrl_price, row['strike'], 0,
+                option = mibian.BS([row['underlying_price'] + undrl_price_increment,
+                                    row['strike'], 0,
                                     row['original_maturity(days)'] + time_increment],
                                    volatility=row['original_volatility'] + vola_increment)
                 if row['type'] == 'call':
@@ -340,7 +343,7 @@ if st.checkbox('Show What If Analysis', False):
 
                 opt_state.dict['params'][index]['maturity(days)'] = round(row['original_maturity(days)'] + time_increment, 1)
                 opt_state.dict['params'][index]['volatility'] = round(row['original_volatility'] + vola_increment, 3)
-                opt_state.dict['params'][index]['underlying_price'] = updated_undrl_price
+                opt_state.dict['params'][index]['underlying_price'] = row['underlying_price'] + undrl_price_increment
 else:
     updated_undrl_price = undrl_price
 
