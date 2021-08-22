@@ -6,9 +6,6 @@ import mibian
 import plotly.express as px
 from datetime import datetime, date
 
-from bokeh.models.widgets import Panel, Tabs
-from bokeh.plotting import figure
-
 
 from collections import OrderedDict
 
