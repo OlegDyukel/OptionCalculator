@@ -6,13 +6,18 @@ import mibian
 import plotly.express as px
 from datetime import datetime, date
 
+from bokeh.models.widgets import Panel, Tabs
+from bokeh.plotting import figure
+
 
 from collections import OrderedDict
 
 import SessionState
 
-from functions import get_undrl_points, get_derivative_points, get_exp_derivative_points, iss_urls, \
-    get_option_underlying, get_option_series_name, get_option_strike, get_option_type
+from functions import get_undrl_points, get_price_points, get_exp_price_points, iss_urls, \
+    get_option_underlying, get_option_series_name, get_option_strike, get_option_type, get_greeks, \
+   min_vola_time, get_volatility, get_plot_stuff, get_greek_points
+
 
 @st.cache
 def get_fut_data(date):
@@ -35,21 +40,6 @@ def get_fut_data(date):
 
     return df_fut
 
-# for the left border sliders in what_if_analysis
-@st.cache(persist=True)
-def min_vola_time(d):
-    min_vola = 0
-    min_time = 0
-    for key, value in d.items():
-        if min_vola == 0 and (value['type'] != 'future'): min_vola = value['original_volatility']
-        if min_time == 0 and (value['type'] != 'future'): min_time = value['original_maturity(days)']
-
-        if min_vola > value['original_volatility'] and (value['type'] != 'future'):
-            min_vola = value['original_volatility']
-        if min_time > value['original_maturity(days)'] and (value['type'] != 'future'):
-            min_time = value['original_maturity(days)']
-
-    return [int(np.floor(min_vola)), int(np.floor(min_time))]
 
 @st.cache(allow_output_mutation=True)
 def get_opt_data(underlying, date):
@@ -83,40 +73,6 @@ def get_opt_data(underlying, date):
     return df_opt
 
 
-def get_volatility(contr_type, undrl_price, strike, maturity_days, price):
-    if contr_type == contr_type:
-        option_for_volat = mibian.BS([undrl_price, strike, 0, maturity_days], callPrice=price)
-        return option_for_volat.impliedVolatility
-    elif contr_type == contr_type:
-        option_for_volat = mibian.BS([undrl_price, strike, 0, maturity_days], putPrice=price)
-        return option_for_volat.impliedVolatility
-    else:   # branch for future
-        return 0
-
-
-def get_greeks(contr_type, undrl_price, strike, maturity_days, volatility):
-    # calculating greeks
-    option = mibian.BS([undrl_price, strike, 0, maturity_days], volatility=volatility)
-
-    if contr_type == contr_type:
-        delta = amount * option.callDelta
-        gamma = amount * option.gamma
-        vega = amount * option.vega
-        theta = amount * option.callTheta
-    elif contr_type == contr_type:
-        delta = amount * option.putDelta
-        gamma = amount * option.gamma
-        vega = amount * option.vega
-        theta = amount * option.putTheta
-    else:    # branch for future
-        delta = amount
-        gamma = 0
-        vega = 0
-        theta = 0
-
-    return {'delta': round(delta, 3), 'gamma': round(gamma, 6),
-            'vega': round(vega, 3), 'theta': round(theta, 3)}
-
 #### getting parameters
 dict_opt_type = {'call': 1, 'put': -1, 'future': 0}
 current_date = datetime.now()
@@ -125,8 +81,7 @@ current_date = current_date.replace(hour=0, minute=0, second=0, microsecond=0)
 opt_state = SessionState.get(rerun=False, dict=OrderedDict())
 opt_state.dict['points'] = opt_state.dict.get('points', OrderedDict())
 opt_state.dict['params'] = opt_state.dict.get('params', OrderedDict())
-
-#opt_state.dict['underlying_type'] = opt_state.str.get('underlying_type', str)
+opt_state.dict['greek_points'] = opt_state.dict.get('greek_points', OrderedDict())
 
 
 #### sidebar
@@ -136,7 +91,6 @@ exchange = st.sidebar.selectbox('', ['Moscow Exchange'], index=0)
 
 df_fut = get_fut_data(current_date)
 
-#st.write(df_fut[df_fut['ASSETCODE'] == 'RTS'])
 
 st.sidebar.markdown("### Underlying")
 #### trying to get RTS underlying as a default
@@ -159,6 +113,7 @@ if 'underlying_type' not in opt_state.dict:
 if opt_state.dict['underlying_type'] != underlying:
     opt_state.dict['points'] = OrderedDict()
     opt_state.dict['params'] = OrderedDict()
+    opt_state.dict['greek_points'] = OrderedDict()
     opt_state.dict['underlying_type'] = underlying
     opt_state.dict['default_portfolio'] = False
 
@@ -182,13 +137,13 @@ if contr_type != 'future' and df_opt.shape[0] > 0:
 
 
     st.sidebar.markdown("### Expiration Date")
-    lst_exp_dates = tuple(df_opt.sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique())
-    exp_date = st.sidebar.selectbox('', lst_exp_dates, index=lst_exp_dates.index(df_opt_subset['LASTTRADEDATE'].values[0]))
+    tpl_exp_dates = tuple(df_opt.sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique())
+    exp_date = st.sidebar.selectbox('', tpl_exp_dates, index=tpl_exp_dates.index(df_opt_subset['LASTTRADEDATE'].values[0]))
 
     st.sidebar.markdown("### Strike")
     df_opt['STRIKE'] = df_opt['STRIKE'].apply(float)
-    strike_range = tuple(df_opt[df_opt['LASTTRADEDATE'] == exp_date]['STRIKE'].sort_values().unique())
-    strike = st.sidebar.selectbox('', strike_range, index=strike_range.index(df_opt_subset['STRIKE'].values[0]))
+    tpl_strike_range = tuple(df_opt[df_opt['LASTTRADEDATE'] == exp_date]['STRIKE'].sort_values().unique())
+    strike = st.sidebar.selectbox('', tpl_strike_range, index=tpl_strike_range.index(df_opt_subset['STRIKE'].values[0]))
 
     ### getting underlying-MM.YY for prices and limits
     underlying_mm_yy = df_opt[df_opt['LASTTRADEDATE'] == exp_date]['UNDERLYING'].unique()[0]
@@ -203,8 +158,8 @@ if contr_type != 'future' and df_opt.shape[0] > 0:
     price = st.sidebar.number_input('', min_value=0.0, step=min_step, value=prevsettleprice)
 else:
     st.sidebar.markdown("### Expiration Date")
-    lst_exp_dates = df_fut[df_fut['ASSETCODE'] == underlying].sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique()
-    exp_date = st.sidebar.selectbox('', lst_exp_dates)
+    tpl_exp_dates = df_fut[df_fut['ASSETCODE'] == underlying].sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique()
+    exp_date = st.sidebar.selectbox('', tpl_exp_dates)
     ### getting underlying-MM.YY for prices and limits
     shortname = df_fut[(df_fut['ASSETCODE'] == underlying) &
                        (df_fut['LASTTRADEDATE'] == exp_date)]['SHORTNAME'].unique()[0]
@@ -259,15 +214,18 @@ df_current_opt_prices = pd.DataFrame({'total_values': [0] * len(lst_undrl_points
 if 'default_portfolio' not in opt_state.dict and len(opt_state.dict['params']) == 0:
 
     volatility = get_volatility(contr_type, undrl_price, strike, maturity_days, price)
-    dict_greeks = get_greeks(contr_type, undrl_price, strike, maturity_days, volatility)
+    dict_greeks = get_greeks(contr_type, undrl_price, strike, maturity_days, volatility, amount)
 
     # getting points for a plot
-    opt_state.dict['points'][shortname + '_current'] = get_derivative_points(lst_undrl_points,
-                                                    dict_opt_type[contr_type], price,
-                                                    amount, strike, volatility/100, maturity_days/365)
-    opt_state.dict['points'][shortname + '_expiration'] = get_exp_derivative_points(lst_undrl_points,
-                                                            dict_opt_type[contr_type],
-                                                            price, amount, strike)
+    opt_state.dict['points'][shortname + '_current'] = get_price_points(lst_undrl_points,
+                                                                        dict_opt_type[contr_type], price,
+                                                                        amount, strike, volatility / 100, maturity_days / 365)
+    opt_state.dict['points'][shortname + '_expiration'] = get_exp_price_points(lst_undrl_points,
+                                                                               dict_opt_type[contr_type],
+                                                                               price, amount, strike)
+    opt_state.dict['greek_points'][shortname] = get_greek_points(lst_undrl_points, contr_type, amount, strike, \
+                                                                 volatility, maturity_days, 0.0)
+
     # getting params
     opt_state.dict['params'][shortname] = {'name': shortname, 'type': contr_type,
                                           'strike': strike, 'underlying_price': undrl_price,
@@ -282,8 +240,12 @@ if 'default_portfolio' not in opt_state.dict and len(opt_state.dict['params']) =
                                           'underlying': underlying,
                                           'settlement_price': prevsettleprice}
 
+    opt_state.dict['default_portfolio'] = False
+
 
 st.title("Portfolio")
+
+name_plot = st.selectbox('', options=['P&L', 'Greeks'])
 
 
 side_cols_btn = st.sidebar.beta_columns(2)
@@ -291,6 +253,7 @@ side_cols_btn = st.sidebar.beta_columns(2)
 if side_cols_btn[1].button("Clear"):
     opt_state.dict['points'] = OrderedDict()
     opt_state.dict['params'] = OrderedDict()
+    opt_state.dict['greek_points'] = OrderedDict()
     opt_state.dict['default_portfolio'] = False
 
 chart_slot = st.empty()
@@ -318,12 +281,16 @@ if st.checkbox('Show What If Analysis', False):
         for index, row in opt_state.dict['params'].items():
             if row['type'] == 'call' or row['type'] == 'put':
                 # getting points for a plot
-                opt_vector = get_derivative_points(lst_undrl_points, dict_opt_type[row['type']],
-                                                   row['price'], row['amount'], row['strike'],
-                                                   (row['original_volatility'] + vola_increment) / 100,
-                                                   (row['original_maturity(days)'] + time_increment) / 365)
+                opt_state.dict['points'][index + '_current'] = get_price_points(lst_undrl_points, dict_opt_type[row['type']],
+                                              row['price'], row['amount'], row['strike'],
+                                              (row['original_volatility'] + vola_increment) / 100,
+                                              (row['original_maturity(days)'] + time_increment) / 365)
 
-                opt_state.dict['points'][index + '_current'] = opt_vector
+                opt_state.dict['greek_points'][index] = get_greek_points(lst_undrl_points, row['type'], \
+                                                                         row['amount'], row['strike'], \
+                                                                         (row['original_volatility'] + vola_increment) , \
+                                                                         (row['original_maturity(days)'] + time_increment) , 0.0)
+
 
                 # calculating updated greeks
                 option = mibian.BS([row['underlying_price'] + undrl_price_increment,
@@ -352,16 +319,18 @@ if side_cols_btn[0].button("Add to portfolio"):
 
     # calculating volatility
     volatility = get_volatility(contr_type, undrl_price, strike, maturity_days, price)
-    dict_greeks = get_greeks(contr_type, undrl_price, strike, maturity_days, volatility)
+    dict_greeks = get_greeks(contr_type, undrl_price, strike, maturity_days, volatility, amount)
 
     # getting points for a plot
-    opt_state.dict['points'][shortname + '_current'] = get_derivative_points(lst_undrl_points,
-                                                        dict_opt_type[contr_type], price,
-                                                        amount, strike, volatility/100,
-                                                                             maturity_days/365)
-    opt_state.dict['points'][shortname + '_expiration'] = get_exp_derivative_points(lst_undrl_points,
-                                                            dict_opt_type[contr_type],
-                                                            price, amount, strike)
+    opt_state.dict['points'][shortname + '_current'] = get_price_points(lst_undrl_points,
+                                                                        dict_opt_type[contr_type], price,
+                                                                        amount, strike, volatility / 100,
+                                                                        maturity_days / 365)
+    opt_state.dict['points'][shortname + '_expiration'] = get_exp_price_points(lst_undrl_points,
+                                                                               dict_opt_type[contr_type],
+                                                                               price, amount, strike)
+    opt_state.dict['greek_points'][shortname] = get_greek_points(lst_undrl_points, contr_type, amount, strike, \
+                                                                 volatility, maturity_days, 0.0)
 
     # getting params
     opt_state.dict['params'][shortname] = {'name': shortname, 'type': contr_type,
@@ -377,6 +346,8 @@ if side_cols_btn[0].button("Add to portfolio"):
                                           'underlying': underlying,
                                           'settlement_price': prevsettleprice}
 
+
+# st.dataframe(pd.DataFrame(opt_state.dict['greek_points'][shortname]))
 
 df_params = pd.DataFrame(opt_state.dict['params']).T
 
@@ -400,45 +371,82 @@ except:
     in_portfolio = st.multiselect('In portfolio', [])
 
 
-### forming points dataframe
-df_position = pd.DataFrame(opt_state.dict['points'], index=lst_undrl_points)
+filtered = [v['is_in_portfolio'] for v in opt_state.dict['params'].values()]
 
-lst_current = [col for col in df_position.columns if 'current' in col]
-lst_expiration = [col for col in df_position.columns if 'expiration' in col]
+if name_plot == "P&L":
+    ### summarising points dataframe
+    df_position = pd.DataFrame(opt_state.dict['points'], index=lst_undrl_points)
 
-are_in = [v['is_in_portfolio'] for v in opt_state.dict['params'].values()]
+    lst_current = [col for col in df_position.columns if 'current' in col]
+    lst_expiration = [col for col in df_position.columns if 'expiration' in col]
 
-df_position['total_opt_points'] = (df_position[lst_current]*are_in).sum(axis=1)
-df_position['total_exp_opt_points'] = (df_position[lst_expiration]*are_in).sum(axis=1)
+    df_position['total_opt_points'] = (df_position[lst_current] * filtered).sum(axis=1)
+    df_position['total_exp_opt_points'] = (df_position[lst_expiration] * filtered).sum(axis=1)
 
-if st.checkbox('Show Data', False):
-    st.dataframe(df_position)
+    # plotting
+    fig = px.line()
+    fig.add_scatter(x=df_position.index, y=df_position.total_opt_points,
+                        name='current price')
+    fig.add_scatter(x=df_position.index, y=df_position.total_exp_opt_points,
+                    name='expiration price')
+    ### adding risk limits
+    fig.add_vline(x=risk_limit_down, line_width=1, line_dash="dot", line_color="grey",
+                  name='risk limit down')
+    fig.add_vline(x=risk_limit_up, line_width=1, line_dash="dot", line_color="grey",
+                  name='risk limit up')
+    ### adding price limits
+    fig.add_vline(x=price_limit_down, line_width=1, line_dash="dash", line_color="red",
+                  name='price limit down')
+    fig.add_vline(x=price_limit_up, line_width=1, line_dash="dash", line_color="red",
+                  name='price limit up')
+    ### adding underlying price
+    fig.add_vline(x=updated_undrl_price, line_width=1, line_dash="dashdot", line_color="black",
+                  name='underlying price')
+    ### adding horizontal axe
+    fig.add_hline(y=0, line_width=1, line_color="black")
+    ### scaling plot
+    fig.update_xaxes(range=[risk_limit_down, risk_limit_up])# sets the range of xaxis
+    fig.update_yaxes(range=[-1.1 * abs(df_position[(df_position.index >= risk_limit_down) & (df_position.index <= risk_limit_up)]['total_exp_opt_points'].min()),
+                             1.1 * abs(df_position[(df_position.index >= risk_limit_down) & (df_position.index <= risk_limit_up)]['total_exp_opt_points'].max())])
+    chart_slot.plotly_chart(fig)
+elif name_plot == "Greeks":
+    # preparing data for plot
+    frames = []
+    for key, value in opt_state.dict['greek_points'].items():
+        frames.append(pd.DataFrame(value).stack())
 
-### plotting
-fig = px.line()
-fig.add_scatter(x=df_position.index, y=df_position.total_opt_points,
-                    name='current price')
-fig.add_scatter(x=df_position.index, y=df_position.total_exp_opt_points,
-                name='expiration price')
-### scaling plot
-fig.update_xaxes(range=[np.min(df_position.index), np.max(df_position.index)])# sets the range of xaxis
-fig.update_yaxes(range=[1.1*df_position['total_exp_opt_points'].min(),
-                        1.1*df_position['total_exp_opt_points'].max()])
-### adding risk limits
-fig.add_vline(x=risk_limit_down, line_width=1, line_dash="dot", line_color="grey",
-                name='risk limit down')
-fig.add_vline(x=risk_limit_up, line_width=1, line_dash="dot", line_color="grey",
-                name='risk limit up')
-### adding price limits
-fig.add_vline(x=price_limit_down, line_width=1, line_dash="dash", line_color="red",
-                name='price limit down')
-fig.add_vline(x=price_limit_up, line_width=1, line_dash="dash", line_color="red",
-                name='price limit up')
-### adding underlying price
-fig.add_vline(x=updated_undrl_price, line_width=1, line_dash="dashdot", line_color="black",
-                name='underlying price')
-### adding horizontal axe
-fig.add_hline(y=0, line_width=1, line_color="black")
-chart_slot.plotly_chart(fig)
+    try:
+        df_plot = (pd.concat(frames, axis=1) * filtered).sum(axis=1).reset_index()
+        df_plot.columns = ['undrl_points', 'type_greek', 'sum_greek']
+    except ValueError:
+        tpl_type_greek = ('delta', 'gamma', 'vega', 'theta')
+        df_plot = pd.DataFrame({'undrl_points': len(tpl_type_greek)*lst_undrl_points,
+                                'type_greek': len(lst_undrl_points)*tpl_type_greek,
+                                'sum_greek': len(lst_undrl_points)*len(tpl_type_greek)*[0]})
 
 
+    # plotting
+    fig = px.line(df_plot, x='undrl_points', y='sum_greek', facet_col='type_greek', facet_col_wrap=2\
+                  , facet_col_spacing=0.05
+                  , labels=dict(undrl_points="Underlying (points)", sum_greek="Greek value", type_greek="Type"))
+    fig.update_yaxes(matches=None, showticklabels=True, ticklabelposition="inside top")
+    ### adding risk limits
+    fig.add_vline(x=risk_limit_down, line_width=1, line_dash="dot", line_color="grey",
+                  name='risk limit down')
+    fig.add_vline(x=risk_limit_up, line_width=1, line_dash="dot", line_color="grey",
+                  name='risk limit up')
+    ### adding price limits
+    fig.add_vline(x=price_limit_down, line_width=1, line_dash="dash", line_color="red",
+                  name='price limit down')
+    fig.add_vline(x=price_limit_up, line_width=1, line_dash="dash", line_color="red",
+                  name='price limit up')
+    ### adding underlying price
+    fig.add_vline(x=updated_undrl_price, line_width=1, line_dash="dashdot", line_color="black",
+                  name='underlying price')
+    ### adding horizontal axe
+    fig.add_hline(y=0, line_width=1, line_color="black")
+    ### scaling plot
+    fig.update_xaxes(range=[risk_limit_down, risk_limit_up])
+    chart_slot.plotly_chart(fig)
+else:
+    chart_slot.error("Something has gone terribly wrong.")
