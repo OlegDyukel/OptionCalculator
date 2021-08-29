@@ -190,3 +190,22 @@ def get_greek_points(lst_undrl_prices, type_contract, amount, strike, volatility
         greeks_dict['theta'][f] = greeks['theta']
 
     return greeks_dict
+
+
+def get_maturity_days(exp_date):
+    return 365 * (datetime.strptime(exp_date, '%Y-%m-%d') - datetime.today()).total_seconds() / (365 * 24 * 60 * 60)
+
+
+def get_opt_smiles(df_opt):
+    df_opt['moneyness'] = np.where(df_opt['OPT_TYPE'] == 'call',
+                                   df_opt['PREVSETTLEPRICE_fut'] - df_opt['STRIKE'],
+                                   df_opt['STRIKE'] - df_opt['PREVSETTLEPRICE_fut'])
+    df_opt['delta_strike_undrl'] = df_opt['STRIKE'] - df_opt['PREVSETTLEPRICE_fut']
+    df_opt_for_smile = df_opt[df_opt['moneyness'] <= 0]
+
+    df_opt_for_smile['maturity_days'] = df_opt_for_smile['LASTTRADEDATE'].apply(get_maturity_days)
+
+    df_opt_for_smile['volatility'] = df_opt_for_smile.apply(lambda x:
+                get_volatility(x['OPT_TYPE'], x['PREVSETTLEPRICE_fut'], x['STRIKE'], x['maturity_days'], x['PREVSETTLEPRICE']), axis=1)
+
+    return df_opt_for_smile

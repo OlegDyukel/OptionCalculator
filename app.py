@@ -13,7 +13,7 @@ import SessionState
 
 from functions import get_undrl_points, get_price_points, get_exp_price_points, iss_urls, \
     get_option_underlying, get_option_series_name, get_option_strike, get_option_type, get_greeks, \
-   min_vola_time, get_volatility, get_plot_stuff, get_greek_points
+   min_vola_time, get_volatility, get_plot_stuff, get_greek_points, get_opt_smiles, get_maturity_days
 
 
 @st.cache
@@ -72,6 +72,27 @@ def get_opt_data(underlying, date):
 
 #### getting parameters
 dict_opt_type = {'call': 1, 'put': -1, 'future': 0}
+dict_language = {'English': {'Portfolio': 'Options Portfolio', 'Exchange': 'Exchange', 'Underlying': '### Underlying',
+                             'Type_derivative': '### Type of derivative', 'Expiration_date': '### Expiration date',
+                             'Strike': '### Strike', 'Price': '### Price', 'Amount': '### Amount',
+                             'Add': 'Add to portfolio', 'Clear': 'Clear', 'negative': '* negative is short',
+                             'future': 'future', 'call': 'call', 'put': 'put', 'Feedback': 'Leave Feedback',
+                             'What_if': 'Show What If Analysis', 'In_portfolio': 'In portfolio',
+                             'Vola_inc': 'Volatility Increment', 'Time_inc': 'Time Increment', 'Undrl_price_inc': 'Underlying Price Increment',
+                             'Upd_params': 'Update parameters', 'Moex': 'Moscow Exchange', 'PL': 'P&L', 'Greeks': 'Greeks',
+                             'Vola_smile': 'Volatility Smile'},
+                 'Русский': {'Portfolio': 'Портфель опционов', 'Exchange': 'Биржа', 'Underlying': '### Базовый актив',
+                             'Type_derivative': '### Тип инструмента', 'Expiration_date': '### Дата исполнения',
+                             'Strike': '### Страйк', 'Price': '### Цена', 'Amount': '### Количество',
+                             'Add': 'Добавить в портфель', 'Clear': 'Очистить', 'negative': '* минус означает продажу',
+                             'future': 'фьючерс', 'call': 'опцион колл', 'put': 'опцион пут', 'Feedback': 'Предложения по улучшению',
+                             'What_if': 'Сценарный анализ', 'In_portfolio': 'В портфеле',
+                             'Vola_inc': 'Изменить волатильность', 'Time_inc': 'Изменить время',
+                             'Undrl_price_inc': 'Изменить цену Базового актива',
+                             'Upd_params': 'Применить новые параметры', 'Moex': 'Московская Биржа',
+                             'PL': 'График прибылей и убытков', 'Greeks': 'Графики греческих коэффициентов',
+                             'Vola_smile': 'Графики улыбок волатильности'
+                             }}
 current_date = datetime.now()
 current_date = current_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -82,14 +103,16 @@ opt_state.dict['greek_points'] = opt_state.dict.get('greek_points', OrderedDict(
 
 
 #### sidebar
-st.sidebar.title("Exchange")
-exchange = st.sidebar.selectbox('', ['Moscow Exchange'], index=0)
+language = st.sidebar.selectbox('', ['English', 'Русский'], index=1)
+
+st.sidebar.title(dict_language[language]["Exchange"])
+exchange = st.sidebar.selectbox('', ['Moex'], index=0, format_func=lambda x: dict_language[language][x])
 
 
 df_fut = get_fut_data(current_date)
 
 
-st.sidebar.markdown("### Underlying")
+st.sidebar.markdown(dict_language[language]["Underlying"])
 #### trying to get RTS underlying as a default
 lst_undrl = df_fut['ASSETCODE'].unique().tolist()
 try:
@@ -118,11 +141,11 @@ if opt_state.dict['underlying_type'] != underlying:
 df_opt = get_opt_data(underlying, current_date)
 
 
-st.sidebar.markdown("### Type of derivative")
+st.sidebar.markdown(dict_language[language]["Type_derivative"])
 if df_opt.shape[0] > 0:
-    contr_type = st.sidebar.radio('', ['future', 'call', 'put'], index=1)
+    contr_type = st.sidebar.radio('', ['future', 'call', 'put'], index=1, format_func=lambda x: dict_language[language][x])
 else:
-    contr_type = st.sidebar.radio('', ['future'])
+    contr_type = st.sidebar.radio('', ['future'], format_func=lambda x: dict_language[language][x])
 
 
 if contr_type != 'future' and df_opt.shape[0] > 0:
@@ -133,11 +156,11 @@ if contr_type != 'future' and df_opt.shape[0] > 0:
     df_opt_subset = df_opt_subset[(df_opt_subset['strike_underl_distance'].min() == df_opt_subset['strike_underl_distance'])]
 
 
-    st.sidebar.markdown("### Expiration Date")
+    st.sidebar.markdown(dict_language[language]["Expiration_date"])
     tpl_exp_dates = tuple(df_opt.sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique())
     exp_date = st.sidebar.selectbox('', tpl_exp_dates, index=tpl_exp_dates.index(df_opt_subset['LASTTRADEDATE'].values[0]))
 
-    st.sidebar.markdown("### Strike")
+    st.sidebar.markdown(dict_language[language]["Strike"])
     df_opt['STRIKE'] = df_opt['STRIKE'].apply(float)
     tpl_strike_range = tuple(df_opt[df_opt['LASTTRADEDATE'] == exp_date]['STRIKE'].sort_values().unique())
     strike = st.sidebar.selectbox('', tpl_strike_range, index=tpl_strike_range.index(df_opt_subset['STRIKE'].values[0]))
@@ -148,13 +171,13 @@ if contr_type != 'future' and df_opt.shape[0] > 0:
                         (df_opt['STRIKE'] == strike) &
                         (df_opt['OPT_TYPE'] == contr_type)]['SHORTNAME'].unique()[0]
     ## Price
-    st.sidebar.markdown("### Price")
+    st.sidebar.markdown(dict_language[language]["Price"])
     prevsettleprice = df_opt[(df_opt['LASTTRADEDATE'] == exp_date) &
                         (df_opt['STRIKE'] == strike) &
                         (df_opt['OPT_TYPE'] == contr_type)]['PREVSETTLEPRICE'].unique()[0]
     price = st.sidebar.number_input('', min_value=0.0, step=min_step, value=prevsettleprice)
 else:
-    st.sidebar.markdown("### Expiration Date")
+    st.sidebar.markdown(dict_language[language]["Expiration_date"])
     tpl_exp_dates = df_fut[df_fut['ASSETCODE'] == underlying].sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique()
     exp_date = st.sidebar.selectbox('', tpl_exp_dates)
     ### getting underlying-MM.YY for prices and limits
@@ -164,19 +187,19 @@ else:
     strike = 0
     volatility = 0
     ## Price
-    st.sidebar.markdown("### Price")
+    st.sidebar.markdown(dict_language[language]["Price"])
     prevsettleprice = df_fut[(df_fut['ASSETCODE'] == underlying) &
                        (df_fut['LASTTRADEDATE'] == exp_date)]['PREVSETTLEPRICE'].unique()[0]
     price = st.sidebar.number_input('', min_value=0.0, step=min_step, value=prevsettleprice)
 
 
-st.sidebar.markdown("### Amount")
-amount = st.sidebar.number_input('*negative is short', step=1, value=42)
+st.sidebar.markdown(dict_language[language]["Amount"])
+amount = st.sidebar.number_input(dict_language[language]['negative'], step=1, value=42)
 
 ######################## inner calculations #########################
 ###############################################################
 
-maturity_days = 365 * (datetime.strptime(exp_date, '%Y-%m-%d') - datetime.today()).total_seconds()/(365*24*60*60)
+maturity_days = get_maturity_days(exp_date)
 
 
 # values for plotting vertical lines
@@ -240,14 +263,19 @@ if 'default_portfolio' not in opt_state.dict and len(opt_state.dict['params']) =
     opt_state.dict['default_portfolio'] = False
 
 
-st.title("Portfolio")
+title_cols = st.beta_columns([3, 1])
+title_cols[0].title(dict_language[language]['Portfolio'])
+#title_cols[1].title('')
+### for comments and feedbacks
+link = '[{}](https://derivatives-map.herokuapp.com/feedback/)'.format(dict_language[language]['Feedback'])
+title_cols[1].markdown(link, unsafe_allow_html=True)
 
-name_plot = st.selectbox('', options=['P&L', 'Greeks'])
+name_plot = st.selectbox('', options=['PL', 'Greeks', 'Vola_smile'], format_func=lambda x: dict_language[language][x])
 
 
 side_cols_btn = st.sidebar.beta_columns(2)
 
-if side_cols_btn[1].button("Clear"):
+if side_cols_btn[1].button(dict_language[language]["Clear"]):
     opt_state.dict['points'] = OrderedDict()
     opt_state.dict['params'] = OrderedDict()
     opt_state.dict['greek_points'] = OrderedDict()
@@ -256,17 +284,17 @@ if side_cols_btn[1].button("Clear"):
 chart_slot = st.empty()
 
 
-if st.checkbox('Show What If Analysis', False):
+if st.checkbox(dict_language[language]['What_if'], False):
     sub_col = st.beta_columns(3)
-    vola_increment = sub_col[0].slider('Volatility Increment',
+    vola_increment = sub_col[0].slider(dict_language[language]['Vola_inc'],
                                        min_value=-min_vola_time(opt_state.dict['params'])[0],
                                        max_value=99, value=0)
-    time_increment = sub_col[1].slider('Time Increment',
+    time_increment = sub_col[1].slider(dict_language[language]['Time_inc'],
                                        min_value=-min_vola_time(opt_state.dict['params'])[1],
                                        max_value=365, value=0)
 
     # changing price
-    undrl_price_increment = sub_col[2].slider('Underlying Price Increment',
+    undrl_price_increment = sub_col[2].slider(dict_language[language]['Undrl_price_inc'],
                                         min_value=float(price_limit_down - undrl_price),
                                         max_value=float(price_limit_up - undrl_price),
                                         value=float(0),
@@ -274,7 +302,7 @@ if st.checkbox('Show What If Analysis', False):
     updated_undrl_price = undrl_price + undrl_price_increment
 
     # applying increment
-    if sub_col[1].button("Update parameters"):
+    if sub_col[1].button(dict_language[language]["Upd_params"]):
         for index, row in opt_state.dict['params'].items():
             if row['type'] == 'call' or row['type'] == 'put':
                 # getting points for a plot
@@ -312,7 +340,7 @@ else:
     updated_undrl_price = undrl_price
 
 
-if side_cols_btn[0].button("Add to portfolio"):
+if side_cols_btn[0].button(dict_language[language]["Add"]):
 
     # calculating volatility
     volatility = get_volatility(contr_type, undrl_price, strike, maturity_days, price)
@@ -344,13 +372,12 @@ if side_cols_btn[0].button("Add to portfolio"):
                                           'settlement_price': prevsettleprice}
 
 
-# st.dataframe(pd.DataFrame(opt_state.dict['greek_points'][shortname]))
 
 df_params = pd.DataFrame(opt_state.dict['params']).T
 
 try:
     selected = [key for key, value in opt_state.dict['params'].items() if value['is_in_portfolio'] == True]
-    in_portfolio = st.multiselect('In portfolio', options=[k for k in opt_state.dict['params'].keys()],
+    in_portfolio = st.multiselect(dict_language[language]['In_portfolio'], options=[k for k in opt_state.dict['params'].keys()],
         default=selected, key='set_portfolio')
 
     for key, value in opt_state.dict['params'].items():
@@ -370,7 +397,7 @@ except:
 
 filtered = [v['is_in_portfolio'] for v in opt_state.dict['params'].values()]
 
-if name_plot == "P&L":
+if name_plot == "PL":
     ### summarising points dataframe
     df_position = pd.DataFrame(opt_state.dict['points'], index=lst_undrl_points)
 
@@ -405,6 +432,8 @@ if name_plot == "P&L":
     fig.update_xaxes(range=[risk_limit_down, risk_limit_up])# sets the range of xaxis
     fig.update_yaxes(range=[-1.1 * abs(df_position[(df_position.index >= risk_limit_down) & (df_position.index <= risk_limit_up)]['total_exp_opt_points'].min()),
                              1.1 * abs(df_position[(df_position.index >= risk_limit_down) & (df_position.index <= risk_limit_up)]['total_exp_opt_points'].max())])
+
+    fig.update_layout(height=400)
     chart_slot.plotly_chart(fig)
 elif name_plot == "Greeks":
     # preparing data for plot
@@ -444,6 +473,28 @@ elif name_plot == "Greeks":
     fig.add_hline(y=0, line_width=1, line_color="black")
     ### scaling plot
     fig.update_xaxes(range=[risk_limit_down, risk_limit_up])
+    fig.update_layout(height=500)
     chart_slot.plotly_chart(fig)
+elif name_plot == 'Vola_smile':
+    df_opt_for_smiles = get_opt_smiles(df_opt).reset_index()
+    df_opt_for_smiles.sort_values(by=['STRIKE'], ascending=[True], inplace=True)
+    lst_ordered = df_opt_for_smiles['LASTTRADEDATE'].sort_values(ascending=[True]).unique()
+
+    # plotting
+    fig = px.line(df_opt_for_smiles, x='STRIKE', y='volatility', facet_col='LASTTRADEDATE', facet_col_wrap=2\
+                  , facet_col_spacing=0.05, category_orders={'LASTTRADEDATE': lst_ordered})
+    fig.update_layout(height=900)
+    fig.update_yaxes(matches=None, showticklabels=True, ticklabelposition="inside top")
+    fig.update_xaxes(matches=None, showticklabels=True)
+    ### adding price limits
+    fig.add_vline(x=price_limit_down, line_width=1, line_dash="dash", line_color="red",
+                  name='price limit down')
+    fig.add_vline(x=price_limit_up, line_width=1, line_dash="dash", line_color="red",
+                  name='price limit up')
+    ### adding underlying price
+    fig.add_vline(x=updated_undrl_price, line_width=1, line_dash="dashdot", line_color="black",
+                  name='underlying price')
+    chart_slot.plotly_chart(fig)
+
 else:
     chart_slot.error("Something has gone terribly wrong.")
