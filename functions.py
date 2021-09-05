@@ -209,3 +209,40 @@ def get_opt_smiles(df_opt):
                 get_volatility(x['OPT_TYPE'], x['PREVSETTLEPRICE_fut'], x['STRIKE'], x['maturity_days'], x['PREVSETTLEPRICE']), axis=1)
 
     return df_opt_for_smile
+
+def get_dict_language():
+    d = {'English': {'Portfolio': 'Options Portfolio', 'Exchange': 'Exchange', 'underlying': 'Underlying',
+                             'type_derivative': 'Type of derivative', 'Expiration_date': 'Expiration date',
+                             'strike': 'Strike', 'price': 'Price', 'amount': 'Amount', 'volatility': 'Implied volatility',
+                             'Add': 'Add to portfolio', 'Clear': 'Clear', 'negative': '* negative is short',
+                             'future': 'Future', 'call': 'Call', 'put': 'Put', 'Feedback': 'Leave Feedback',
+                             'What_if': 'Show What If Analysis', 'In_portfolio': 'In portfolio',
+                             'Vola_inc': 'Volatility Increment', 'Time_inc': 'Time Increment', 'Undrl_price_inc': 'Underlying Price Increment',
+                             'Upd_params': 'Update parameters', 'Moex': 'Moscow Exchange', 'PL': 'P&L', 'Greeks': 'Greeks',
+                             'Vola_smile': 'Volatility Smile',
+                             'delta': 'Delta', 'gamma': 'Gamma', 'vega': 'Vega', 'theta': 'Theta',
+                             'Fair_price': 'Fair price', 'Settlement_price': 'Settlement price', 'underlying_price': 'Underlying price',
+                             'maturity_days': 'Maturity in days', 'Option_value': 'Option value', 'Underlying_value': 'Underlying value',
+                             'Current_value': 'Current value', 'Expiration_value': 'Expiration value',
+                             'Greek_value': 'Greek value', 'settlement_price': 'Settlement price', 'fair_price': 'Fair price'},
+                 'Русский': {'Portfolio': 'Портфель опционов', 'Exchange': 'Биржа', 'underlying': 'Базовый актив',
+                             'type_derivative': 'Тип инструмента', 'Expiration_date': 'Дата исполнения',
+                             'strike': 'Страйк', 'price': 'Цена', 'amount': 'Количество',  'volatility': 'Волатильность',
+                             'Add': 'Добавить в портфель', 'Clear': 'Очистить', 'negative': '* минус означает продажу',
+                             'future': 'Фьючерс', 'call': 'Опцион колл', 'put': 'Опцион пут', 'Feedback': 'Предложения по улучшению',
+                             'What_if': 'Сценарный анализ', 'In_portfolio': 'В портфеле',
+                             'Vola_inc': 'Изменить волатильность', 'Time_inc': 'Изменить время',
+                             'Undrl_price_inc': 'Изменить цену Базового актива',
+                             'Upd_params': 'Применить новые параметры', 'Moex': 'Московская Биржа',
+                             'PL': 'График прибылей и убытков', 'Greeks': 'Графики греческих коэффициентов',
+                             'Vola_smile': 'Графики улыбок волатильности',
+                             'delta': 'Дельта', 'gamma': 'Гамма', 'vega': 'Вега', 'theta': 'Тетта',
+                             'Fair_price': 'Справедливая цена', 'Settlement_price': 'Расчетная цена', 'underlying_price': 'Цена базового актива',
+                             'maturity_days': 'Дней до исполнения', 'Option_value': 'Стоимость опциона', 'Underlying_value': 'Стоимость Базового актива',
+                             'Current_value': 'Текущая стоимость', 'Expiration_value': 'Стоимость на экспирацию',
+                             'Greek_value': 'Значения коэффициента', 'settlement_price': 'Расчетная цена', 'fair_price': 'Справедливая цена'}}
+    return d
+
+def translate_word(word):
+    d = get_dict_language()
+    return d['Русский'][word]
