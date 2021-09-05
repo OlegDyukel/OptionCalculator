@@ -110,13 +110,13 @@ def min_vola_time(d):
     min_vola = 0
     min_time = 0
     for key, value in d.items():
-        if min_vola == 0 and (value['type'] != 'future'): min_vola = value['original_volatility']
-        if min_time == 0 and (value['type'] != 'future'): min_time = value['original_maturity(days)']
+        if min_vola == 0 and (value['type_derivative'] != 'future'): min_vola = value['original_volatility']
+        if min_time == 0 and (value['type_derivative'] != 'future'): min_time = value['original_maturity_days']
 
-        if min_vola > value['original_volatility'] and (value['type'] != 'future'):
+        if min_vola > value['original_volatility'] and (value['type_derivative'] != 'future'):
             min_vola = value['original_volatility']
-        if min_time > value['original_maturity(days)'] and (value['type'] != 'future'):
-            min_time = value['original_maturity(days)']
+        if min_time > value['original_maturity_days'] and (value['type_derivative'] != 'future'):
+            min_time = value['original_maturity_days']
 
     return [int(np.floor(min_vola)), int(np.floor(min_time))]
 
