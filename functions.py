@@ -36,14 +36,14 @@ def exp_opt_price(type_contract, future_price, strike=0):
 
 ######################################################
 ##### points for the chart
-@st.cache(persist=True)
+@st.cache_data
 def get_undrl_points(limit_down, limit_up, range_out_of_limits=0.05):
     future_points = np.linspace((1-range_out_of_limits)*limit_down,
                                 (1+range_out_of_limits)*limit_up, 40)
     return list(future_points)
 
 
-@st.cache(persist=True)
+@st.cache_data
 def get_price_points(lst_undrl_prices, type_contract, price, amount=1, strike=0, sigma=0, T=0, r=0):
     if type_contract == 0:   ### for futures
         lst_derivative_prices = [(f - price)*amount for f in lst_undrl_prices]
@@ -52,7 +52,7 @@ def get_price_points(lst_undrl_prices, type_contract, price, amount=1, strike=0,
                           for f in lst_undrl_prices]
     return lst_derivative_prices
 
-@st.cache(persist=True)
+@st.cache_data
 def get_exp_price_points(lst_undrl_prices, type_contract, price, amount=1, strike=0):
     if type_contract == 0:
         lst_derivative_prices = [(f - price)*amount for f in lst_undrl_prices]
@@ -78,27 +78,36 @@ def iss_urls():
                                 "?iss.only=securities&securities.columns={}".format(','.join(columns_opt))}
 
 
-def get_option_series_name(s):
-    st = re.sub("[CP]A[\d\.\-]+$", "", s)
-    return st
+_OPTION_NAME_PATTERNS = (
+    re.compile(r'^(?P<underlying>.+)M\d{6}(?P<option_type>[CP])A(?P<strike>\d+(?:\.\d+)?)$'),
+    re.compile(r'^(?P<underlying>.+)P\d{6}(?P<option_type>[CP])E(?P<strike>\d+(?:\.\d+)?)$'),
+)
 
 
-def get_option_strike(s):
-    st = re.sub("\A\w{1,4}-\d{1,2}.\d{2}M\d{6}[CP]A", "", s)
-    return st
+def _parse_option_name(option_name):
+    for pattern in _OPTION_NAME_PATTERNS:
+        match = pattern.match(option_name)
+        if match:
+            return match
+    raise ValueError('Unsupported MOEX option name: {}'.format(option_name))
+
+
+def get_option_series_name(option_name):
+    match = _parse_option_name(option_name)
+    return option_name[:match.start('option_type')]
+
+
+def get_option_strike(option_name):
+    return float(_parse_option_name(option_name).group('strike'))
 
 
 def get_option_underlying(option_name):
-    st = re.split("M\d{6}", option_name)
-    return st[0]
+    return _parse_option_name(option_name).group('underlying')
 
 
 def get_option_type(option_name):
-    st = re.search("\d{6}[CP]A\d+", option_name)
-    st = re.search("[CP]", st[0])
-    if st[0] == 'C': return 'call'
-    elif st[0] == 'P': return 'put'
-    else: return st[0]
+    option_type = _parse_option_name(option_name).group('option_type')
+    return 'call' if option_type == 'C' else 'put'
 
 
 def date_convert(string):
@@ -193,7 +202,8 @@ def get_greek_points(lst_undrl_prices, type_contract, amount, strike, volatility
 
 
 def get_maturity_days(exp_date):
-    return 365 * (datetime.strptime(exp_date, '%Y-%m-%d') - datetime.today()).total_seconds() / (365 * 24 * 60 * 60)
+    expiration = pd.to_datetime(exp_date).to_pydatetime()
+    return (expiration - datetime.now()).total_seconds() / (24 * 60 * 60)
 
 
 def get_opt_smiles(df_opt):
@@ -201,7 +211,7 @@ def get_opt_smiles(df_opt):
                                    df_opt['PREVSETTLEPRICE_fut'] - df_opt['STRIKE'],
                                    df_opt['STRIKE'] - df_opt['PREVSETTLEPRICE_fut'])
     df_opt['delta_strike_undrl'] = df_opt['STRIKE'] - df_opt['PREVSETTLEPRICE_fut']
-    df_opt_for_smile = df_opt[df_opt['moneyness'] <= 0]
+    df_opt_for_smile = df_opt[df_opt['moneyness'] <= 0].copy()
 
     df_opt_for_smile['maturity_days'] = df_opt_for_smile['LASTTRADEDATE'].apply(get_maturity_days)
 

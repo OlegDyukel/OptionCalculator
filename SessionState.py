@@ -1,4 +1,4 @@
-"""Hack to add per-session state to Streamlit.
+"""Backward-compatible access to Streamlit's public session-state API.
 Usage
 -----
 >>> import SessionState
@@ -15,13 +15,10 @@ result:
 >>> session_state.user_name
 'Mary'
 """
-try:
-    import streamlit.ReportThread as ReportThread
-    from streamlit.server.Server import Server
-except Exception:
-    # Streamlit >= 0.65.0
-    import streamlit.report_thread as ReportThread
-    from streamlit.server.server import Server
+import streamlit as st
+
+
+_STATE_KEY = "_option_calculator_state"
 
 
 class SessionState(object):
@@ -65,41 +62,12 @@ def get(**kwargs):
     >>> session_state.user_name
     'Mary'
     """
-    # Hack to get the session object from Streamlit.
+    if _STATE_KEY not in st.session_state:
+        st.session_state[_STATE_KEY] = SessionState(**kwargs)
 
-    ctx = ReportThread.get_report_ctx()
+    session_state = st.session_state[_STATE_KEY]
+    for key, value in kwargs.items():
+        if not hasattr(session_state, key):
+            setattr(session_state, key, value)
 
-    this_session = None
-
-    current_server = Server.get_current()
-    if hasattr(current_server, '_session_infos'):
-        # Streamlit < 0.56
-        session_infos = Server.get_current()._session_infos.values()
-    else:
-        session_infos = Server.get_current()._session_info_by_id.values()
-
-    for session_info in session_infos:
-        s = session_info.session
-        if (
-            # Streamlit < 0.54.0
-            (hasattr(s, '_main_dg') and s._main_dg == ctx.main_dg)
-            or
-            # Streamlit >= 0.54.0
-            (not hasattr(s, '_main_dg') and s.enqueue == ctx.enqueue)
-            or
-            # Streamlit >= 0.65.2
-            (not hasattr(s, '_main_dg') and s._uploaded_file_mgr == ctx.uploaded_file_mgr)
-        ):
-            this_session = s
-
-    if this_session is None:
-        raise RuntimeError(
-            "Oh noes. Couldn't get your Streamlit Session object. "
-            'Are you doing something fancy with threads?')
-
-    # Got the session object! Now let's attach some state into it.
-
-    if not hasattr(this_session, '_custom_session_state'):
-        this_session._custom_session_state = SessionState(**kwargs)
-
-    return this_session._custom_session_state
+    return session_state

@@ -4,7 +4,7 @@ import requests
 import numpy as np
 import mibian
 import plotly.express as px
-from datetime import datetime, date
+from datetime import datetime
 
 
 from collections import OrderedDict
@@ -17,37 +17,49 @@ from functions import get_undrl_points, get_price_points, get_exp_price_points, 
    get_dict_language, translate_word
 
 
-@st.cache
-def get_fut_data(date):
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_fut_data(as_of_date):
     ######### futures data
-    r_fut = requests.get(iss_urls()["query_futures_instruments"])
-    data_fut = r_fut.json()["securities"]["data"]
-    columns_fut = r_fut.json()["securities"]["columns"]
+    r_fut = requests.get(iss_urls()["query_futures_instruments"], timeout=30)
+    r_fut.raise_for_status()
+    securities = r_fut.json()["securities"]
+    data_fut = securities["data"]
+    columns_fut = securities["columns"]
     df_fut = pd.DataFrame(data_fut, columns=columns_fut)
 
     # filtering old futures
-    df_fut = df_fut[pd.to_datetime(df_fut['LASTTRADEDATE']) > date]
+    last_trade_dates = pd.to_datetime(df_fut['LASTTRADEDATE'], errors='coerce')
+    df_fut = df_fut[last_trade_dates > as_of_date].copy()
+    numeric_columns = ['PREVSETTLEPRICE', 'DECIMALS', 'LASTSETTLEPRICE',
+                       'MINSTEP', 'STEPPRICE', 'LOWLIMIT', 'HIGHLIMIT']
+    df_fut[numeric_columns] = df_fut[numeric_columns].apply(pd.to_numeric, errors='coerce')
+    df_fut.dropna(subset=['SHORTNAME', 'ASSETCODE', 'PREVSETTLEPRICE',
+                          'LASTSETTLEPRICE', 'MINSTEP', 'LOWLIMIT', 'HIGHLIMIT'], inplace=True)
 
-    # getting absolute price limits
-    df_fut['ABS_LOW_LIMIT'] = df_fut['LASTSETTLEPRICE'] - df_fut['LOWLIMIT']
-    df_fut['ABS_HIGH_LIMIT'] = df_fut['LASTSETTLEPRICE'] + df_fut['HIGHLIMIT']
+    # MOEX now returns LOWLIMIT and HIGHLIMIT as absolute prices.
+    df_fut['ABS_LOW_LIMIT'] = df_fut['LOWLIMIT']
+    df_fut['ABS_HIGH_LIMIT'] = df_fut['HIGHLIMIT']
 
-    # getting absolute risk limits
-    df_fut['ABS_LOW_RISK_LIMIT'] = df_fut['LASTSETTLEPRICE'] - 1.3*df_fut['LOWLIMIT']
-    df_fut['ABS_HIGH_RISK_LIMIT'] = df_fut['LASTSETTLEPRICE'] + 1.3*df_fut['HIGHLIMIT']
+    # Keep the original 30% extension beyond the daily price-limit range.
+    df_fut['ABS_LOW_RISK_LIMIT'] = (df_fut['LASTSETTLEPRICE']
+                                     - 1.3 * (df_fut['LASTSETTLEPRICE'] - df_fut['LOWLIMIT']))
+    df_fut['ABS_HIGH_RISK_LIMIT'] = (df_fut['LASTSETTLEPRICE']
+                                      + 1.3 * (df_fut['HIGHLIMIT'] - df_fut['LASTSETTLEPRICE']))
 
     return df_fut
 
 
-@st.cache(allow_output_mutation=True)
-def get_opt_data(underlying, date):
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_opt_data(underlying, as_of_date, futures):
     ######### options data
-    r_opt = requests.get(iss_urls()["query_options_instruments"])
-    data_opt = r_opt.json()["securities"]["data"]
-    columns_opt = r_opt.json()["securities"]["columns"]
+    r_opt = requests.get(iss_urls()["query_options_instruments"], timeout=30)
+    r_opt.raise_for_status()
+    securities = r_opt.json()["securities"]
+    data_opt = securities["data"]
+    columns_opt = securities["columns"]
     df_opt = pd.DataFrame(data_opt, columns=columns_opt)
 
-    df_opt = df_opt[df_opt['ASSETCODE'] == underlying]
+    df_opt = df_opt[df_opt['ASSETCODE'] == underlying].copy()
 
     # getting underlying
     df_opt["UNDERLYING"] = df_opt["SHORTNAME"].apply(get_option_underlying)
@@ -56,17 +68,24 @@ def get_opt_data(underlying, date):
     df_opt["OPT_SERIES"] = df_opt["SHORTNAME"].apply(get_option_series_name)
 
     # getting strike = cutting strikes and types
-    df_opt["STRIKE"] = df_opt["SHORTNAME"].apply(get_option_strike).apply(float)
+    df_opt["STRIKE"] = pd.to_numeric(df_opt["SHORTNAME"].apply(get_option_strike), errors='coerce')
+    df_opt['PREVSETTLEPRICE'] = pd.to_numeric(df_opt['PREVSETTLEPRICE'], errors='coerce')
 
     # getting type of option
     df_opt["OPT_TYPE"] = df_opt["SHORTNAME"].apply(get_option_type)
 
     # filtering old options
-    df_opt = df_opt[pd.to_datetime(df_opt['LASTTRADEDATE']) > date]
+    last_trade_dates = pd.to_datetime(df_opt['LASTTRADEDATE'], errors='coerce')
+    df_opt = df_opt[last_trade_dates > as_of_date].copy()
 
     # getting STEPPRICE param for options from futures
-    df_opt = df_opt.merge(df_fut[["SHORTNAME", "STEPPRICE", "PREVSETTLEPRICE", "LASTTRADEDATE"]],
+    df_opt = df_opt.merge(futures[["SHORTNAME", "STEPPRICE", "PREVSETTLEPRICE", "LASTTRADEDATE"]],
                                   how="left", left_on="UNDERLYING", right_on="SHORTNAME", suffixes=["", "_fut"])
+    # Weekly options use a different price scale and do not map to a futures
+    # SHORTNAME. Keep only instruments that this futures-based calculator can
+    # price correctly.
+    df_opt.dropna(subset=['STRIKE', 'PREVSETTLEPRICE', 'PREVSETTLEPRICE_fut',
+                          'LASTTRADEDATE_fut'], inplace=True)
     df_opt['strike_underl_distance'] = np.abs(df_opt['STRIKE'] - df_opt['PREVSETTLEPRICE_fut'])
     return df_opt
 
@@ -86,13 +105,25 @@ opt_state.dict['vola_smile_points'] = opt_state.dict.get('vola_smile_points', Or
 
 
 #### sidebar
-language = st.sidebar.radio('', ['Русский', 'English'], index=0, key='lang')
+language = st.sidebar.radio('Language / Язык', ['Русский', 'English'], index=0,
+                            key='lang', label_visibility='collapsed')
 
 st.sidebar.title(dict_language[language]["Exchange"])
-exchange = st.sidebar.selectbox('', ['Moex'], index=0, format_func=lambda x: dict_language[language][x])
+exchange = st.sidebar.selectbox(dict_language[language]["Exchange"], ['Moex'], index=0,
+                                format_func=lambda x: dict_language[language][x],
+                                label_visibility='collapsed')
 
 
-df_fut = get_fut_data(current_date)
+try:
+    df_fut = get_fut_data(current_date)
+except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+    st.error('Could not load current futures data from MOEX. Please try again later.')
+    st.exception(exc)
+    st.stop()
+
+if df_fut.empty:
+    st.error('MOEX returned no active futures instruments.')
+    st.stop()
 
 
 st.sidebar.markdown('### {}'.format(dict_language[language]["underlying"]))
@@ -102,10 +133,11 @@ try:
     default_index = lst_undrl.index('RTS')
 except ValueError:
     default_index = 0
-underlying = st.sidebar.selectbox('', lst_undrl, index=default_index)
+underlying = st.sidebar.selectbox(dict_language[language]["underlying"], lst_undrl,
+                                  index=default_index, label_visibility='collapsed')
 
-min_step = df_fut[df_fut['ASSETCODE'] == underlying]['MINSTEP'].unique()[0]
-decimals = df_fut[df_fut['ASSETCODE'] == underlying]['DECIMALS'].unique()[0]
+min_step = float(df_fut[df_fut['ASSETCODE'] == underlying]['MINSTEP'].unique()[0])
+decimals = int(df_fut[df_fut['ASSETCODE'] == underlying]['DECIMALS'].unique()[0])
 
 # initialization state variable
 if 'underlying_type' not in opt_state.dict:
@@ -120,16 +152,27 @@ if opt_state.dict['underlying_type'] != underlying:
     opt_state.dict['vola_smile_points'] = OrderedDict()
     opt_state.dict['underlying_type'] = underlying
     opt_state.dict['default_portfolio'] = False
+    st.session_state.pop('set_portfolio', None)
 
 
-df_opt = get_opt_data(underlying, current_date)
+try:
+    df_opt = get_opt_data(underlying, current_date, df_fut)
+except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+    st.warning('Options data is unavailable; futures calculations are still available.')
+    st.exception(exc)
+    df_opt = pd.DataFrame(columns=['STRIKE'])
 
 
 st.sidebar.markdown('### {}'.format(dict_language[language]["type_derivative"]))
 if df_opt.shape[0] > 0:
-    contr_type = st.sidebar.radio('', ['future', 'call', 'put'], index=1, format_func=lambda x: dict_language[language][x])
+    contr_type = st.sidebar.radio(dict_language[language]["type_derivative"],
+                                  ['future', 'call', 'put'], index=1,
+                                  format_func=lambda x: dict_language[language][x],
+                                  label_visibility='collapsed')
 else:
-    contr_type = st.sidebar.radio('', ['future'], format_func=lambda x: dict_language[language][x])
+    contr_type = st.sidebar.radio(dict_language[language]["type_derivative"], ['future'],
+                                  format_func=lambda x: dict_language[language][x],
+                                  label_visibility='collapsed')
 
 
 if contr_type != 'future' and df_opt.shape[0] > 0:
@@ -142,12 +185,16 @@ if contr_type != 'future' and df_opt.shape[0] > 0:
 
     st.sidebar.markdown('### {}'.format(dict_language[language]["Expiration_date"]))
     tpl_exp_dates = tuple(df_opt.sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique())
-    exp_date = st.sidebar.selectbox('', tpl_exp_dates, index=tpl_exp_dates.index(df_opt_subset['LASTTRADEDATE'].values[0]))
+    exp_date = st.sidebar.selectbox(dict_language[language]["Expiration_date"], tpl_exp_dates,
+                                    index=tpl_exp_dates.index(df_opt_subset['LASTTRADEDATE'].values[0]),
+                                    label_visibility='collapsed')
 
     st.sidebar.markdown('### {}'.format(dict_language[language]["strike"]))
     df_opt['STRIKE'] = df_opt['STRIKE'].apply(float)
     tpl_strike_range = tuple(df_opt[df_opt['LASTTRADEDATE'] == exp_date]['STRIKE'].sort_values().unique())
-    strike = st.sidebar.selectbox('', tpl_strike_range, index=tpl_strike_range.index(df_opt_subset['STRIKE'].values[0]))
+    strike = st.sidebar.selectbox(dict_language[language]["strike"], tpl_strike_range,
+                                  index=tpl_strike_range.index(df_opt_subset['STRIKE'].values[0]),
+                                  label_visibility='collapsed')
 
     ### getting underlying-MM.YY for prices and limits
     underlying_mm_yy = df_opt[df_opt['LASTTRADEDATE'] == exp_date]['UNDERLYING'].unique()[0]
@@ -159,11 +206,14 @@ if contr_type != 'future' and df_opt.shape[0] > 0:
     prevsettleprice = df_opt[(df_opt['LASTTRADEDATE'] == exp_date) &
                         (df_opt['STRIKE'] == strike) &
                         (df_opt['OPT_TYPE'] == contr_type)]['PREVSETTLEPRICE'].unique()[0]
-    price = st.sidebar.number_input('', min_value=0.0, step=min_step, value=prevsettleprice, format="%.4f")
+    price = st.sidebar.number_input(dict_language[language]["price"], min_value=0.0,
+                                    step=min_step, value=float(prevsettleprice), format="%.4f",
+                                    label_visibility='collapsed')
 else:
     st.sidebar.markdown('### {}'.format(dict_language[language]["Expiration_date"]))
     tpl_exp_dates = df_fut[df_fut['ASSETCODE'] == underlying].sort_values('LASTTRADEDATE')['LASTTRADEDATE'].unique()
-    exp_date = st.sidebar.selectbox('', tpl_exp_dates)
+    exp_date = st.sidebar.selectbox(dict_language[language]["Expiration_date"], tpl_exp_dates,
+                                    label_visibility='collapsed')
     ### getting underlying-MM.YY for prices and limits
     shortname = df_fut[(df_fut['ASSETCODE'] == underlying) &
                        (df_fut['LASTTRADEDATE'] == exp_date)]['SHORTNAME'].unique()[0]
@@ -174,7 +224,9 @@ else:
     st.sidebar.markdown('### {}'.format(dict_language[language]["price"]))
     prevsettleprice = df_fut[(df_fut['ASSETCODE'] == underlying) &
                        (df_fut['LASTTRADEDATE'] == exp_date)]['PREVSETTLEPRICE'].unique()[0]
-    price = st.sidebar.number_input('', min_value=0.0, step=min_step, value=prevsettleprice, format="%.5f")
+    price = st.sidebar.number_input(dict_language[language]["price"], min_value=0.0,
+                                    step=min_step, value=float(prevsettleprice), format="%.5f",
+                                    label_visibility='collapsed')
 
 
 st.sidebar.markdown('### {}'.format(dict_language[language]["amount"]))
@@ -247,17 +299,19 @@ if 'default_portfolio' not in opt_state.dict and len(opt_state.dict['params']) =
     opt_state.dict['default_portfolio'] = False
 
 
-title_cols = st.beta_columns([3, 1])
+title_cols = st.columns([3, 1])
 title_cols[0].title(dict_language[language]['Portfolio'])
 #title_cols[1].title('')
 ### for comments and feedbacks
 link = '[{}](https://derivatives-map.herokuapp.com/feedback/)'.format(dict_language[language]['Feedback'])
 title_cols[1].markdown(link, unsafe_allow_html=True)
 
-name_plot = st.selectbox('', options=['PL', 'Greeks', 'Vola_smile'], format_func=lambda x: dict_language[language][x])
+name_plot = st.selectbox('Chart', options=['PL', 'Greeks', 'Vola_smile'],
+                         format_func=lambda x: dict_language[language][x],
+                         label_visibility='collapsed')
 
 
-side_cols_btn = st.sidebar.beta_columns(2)
+side_cols_btn = st.sidebar.columns(2)
 
 if side_cols_btn[1].button(dict_language[language]["Clear"]):
     opt_state.dict['points'] = OrderedDict()
@@ -265,12 +319,13 @@ if side_cols_btn[1].button(dict_language[language]["Clear"]):
     opt_state.dict['greek_points'] = OrderedDict()
     opt_state.dict['vola_smile_points'] = OrderedDict()
     opt_state.dict['default_portfolio'] = False
+    st.session_state.pop('set_portfolio', None)
 
 chart_slot = st.empty()
 
 
-if st.checkbox(dict_language[language]['What_if'], False):
-    sub_col = st.beta_columns(3)
+if st.checkbox(dict_language[language]['What_if'], value=False):
+    sub_col = st.columns(3)
     vola_increment = sub_col[0].slider(dict_language[language]['Vola_inc'],
                                        min_value=-min_vola_time(opt_state.dict['params'])[0],
                                        max_value=99, value=0)
@@ -384,7 +439,7 @@ try:
         lst_translated_params.append(dict_language[language].get(i, '-'))
 
     df_params_filtered['translated_params'] = lst_translated_params
-    st.dataframe(df_params_filtered.set_index(['translated_params']), height=800)
+    st.dataframe(df_params_filtered.set_index(['translated_params']).astype(str), height=800)
 
 except:
     in_portfolio = st.multiselect('In portfolio', [])
@@ -504,4 +559,3 @@ elif name_plot == 'Vola_smile':
 
 else:
     chart_slot.error("Something has gone terribly wrong.")
-
